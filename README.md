@@ -9,6 +9,8 @@ app.
 
 - **Prompt studio:** Build and edit structured prompts for XPath locators,
   Robot Framework automation, test cases, and custom QA tasks.
+- **Model evaluation:** Send a prompt through the local FastAPI service, record
+  the generated response and latency, and review recent runs from SQLite.
 - **Image analysis:** Submit a screenshot with context to identify visible UI
   issues and generate evidence-based verification steps.
 - **Audio analysis:** Transcribe a recording, then use the selected chat model
@@ -46,6 +48,41 @@ analysis are separate workflows and are not part of this tabular benchmark.
 The existing image and audio analysis workflows send content to the configured
 provider only when you explicitly run model analysis; they do not train the
 local ML models.
+
+## Local model evaluation service
+
+The evaluation workflow uses a small FastAPI service and SQLAlchemy-backed
+SQLite store. Start both processes from the repository root in separate
+terminals:
+
+```powershell
+python -m uvicorn evaluation_api:app --host 127.0.0.1 --port 8000
+```
+
+```powershell
+streamlit run app.py
+```
+
+The Streamlit page sends one request to the selected configured mini model only
+after you press **Run evaluation**. The API also exposes `/health`,
+`/api/evaluations` (POST to run and save; GET to list recent runs), and
+interactive API documentation at `/docs`. It supports only the existing
+OpenAI-compatible provider configuration and mini models; it does not yet
+provide an AI judge, automated quality score, token count, or cost estimate.
+
+The default database is `~/.evalsphere/evalsphere.db`. Set
+`EVALSPHERE_DATABASE_URL` to use another SQLite database URL, and
+`EVALSPHERE_API_URL` in the Streamlit process to use another API URL. Both
+processes should use the same `OPENAI_BASE_URL`. You can configure
+`OPENAI_API_KEY` in the API process, or enter it in the Streamlit sidebar; in
+the latter case it is sent in a request header to the local API and is not
+stored in the database.
+
+The API is intended for local development and has no user authentication or
+authorization yet. Keep it bound to loopback (`127.0.0.1`) and do not expose
+it to a network until authentication and deployment hardening are added.
+Prompts and model responses are persisted locally, so avoid sending sensitive
+content unless the local storage and retention are appropriate.
 
 ## Models, costs, and quality
 

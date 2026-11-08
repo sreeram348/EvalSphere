@@ -28,6 +28,11 @@ from benchmark import (
     dataset_sources,
     read_dataset,
 )
+from evaluation_client import (
+    EvaluationAPIError,
+    fetch_recent_evaluations,
+    submit_evaluation,
+)
 
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
@@ -46,7 +51,7 @@ def render_sidebar() -> tuple[str, ProviderConfig]:
     st.sidebar.caption("AI workspace for software quality engineering")
     page = st.sidebar.radio(
         "Workspace",
-        ("Overview", "Prompt studio", "ML benchmark"),
+        ("Overview", "Model evaluation", "Prompt studio", "ML benchmark"),
         key="workspace_page",
     )
     if page is None:
@@ -68,12 +73,97 @@ def render_sidebar() -> tuple[str, ProviderConfig]:
     if model is None:
         raise RuntimeError("No provider model was selected.")
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip()
+    evaluation_api_url = os.getenv(
+        "EVALSPHERE_API_URL", "http://127.0.0.1:8000"
+    ).strip()
     st.sidebar.caption(f"API endpoint: `{base_url}`")
+    st.sidebar.caption(f"Evaluation service: `{evaluation_api_url}`")
     st.sidebar.caption(
         "Mini models keep usage costs lower. Pricing and quality depend on your provider; "
         "premium-level results are not guaranteed."
     )
     return page, ProviderConfig(api_key=api_key.strip(), base_url=base_url, model=model)
+
+
+def render_model_evaluation(config: ProviderConfig) -> None:
+    st.title("Model evaluation", icon=":material/compare:")
+    st.write(
+        "Run a prompt against the configured mini model through the evaluation API. "
+        "Each successful response is saved to the local SQLite evaluation history."
+    )
+    st.info(
+        "Submitting sends your prompt to the configured provider and may incur charges. "
+        "The prompt and response are stored locally. This initial workflow records model "
+        "output and latency; it does not claim an automatic quality score or token cost.",
+        title="Live evaluation",
+    )
+
+    api_base_url = os.getenv("EVALSPHERE_API_URL", "http://127.0.0.1:8000").strip()
+    with st.form("model_evaluation_form"):
+        prompt = st.text_area(
+            "Prompt",
+            placeholder="Enter the prompt you want to evaluate.",
+            max_chars=12_000,
+            height=180,
+            key="evaluation_prompt",
+        )
+        st.caption(f"Selected model: `{config.model}`")
+        submitted = st.form_submit_button(
+            "Run evaluation",
+            type="primary",
+            key="run_model_evaluation",
+        )
+
+    if submitted:
+        if not config.api_key:
+            st.error("Set `OPENAI_API_KEY` or enter an API key in the sidebar first.")
+        elif not prompt.strip():
+            st.error("Enter a prompt before running an evaluation.")
+        else:
+            try:
+                with st.spinner("Calling the configured model..."):
+                    result = submit_evaluation(
+                        base_url=api_base_url,
+                        prompt=prompt,
+                        model=config.model,
+                        provider_api_key=config.api_key,
+                    )
+                st.session_state["latest_model_evaluation"] = result
+            except EvaluationAPIError as error:
+                st.error(str(error), icon=":material/error:")
+
+    latest = st.session_state.get("latest_model_evaluation")
+    if latest:
+        st.subheader("Latest response")
+        latency_col, model_col = st.columns(2)
+        latency_col.metric("Latency", f'{latest["latency_ms"]:.0f} ms')
+        model_col.metric("Model", latest["model"])
+        st.code(latest["response"], language=None)
+
+    st.subheader("Recent evaluations")
+    try:
+        history = fetch_recent_evaluations(base_url=api_base_url)
+    except EvaluationAPIError as error:
+        st.warning(
+            str(error),
+            title="Evaluation service unavailable",
+        )
+        st.caption(
+            "Start the API in another terminal with "
+            "`python -m uvicorn evaluation_api:app --host 127.0.0.1 --port 8000`."
+        )
+        return
+
+    for item in history:
+        timestamp = item["created_at"].replace("T", " ")[:19]
+        with st.expander(f'{item["model"]} · {timestamp}'):
+            st.caption(f'Latency: {item["latency_ms"]:.0f} ms')
+            st.markdown("**Prompt**")
+            st.code(item["prompt"], language=None)
+            st.markdown("**Response**")
+            st.code(item["response"], language=None)
+    if not history:
+        st.caption("No evaluations have been saved yet.")
 
 
 def render_overview() -> None:
@@ -730,6 +820,8 @@ st.set_page_config(
 page_name, provider_config = render_sidebar()
 if page_name == "Overview":
     render_overview()
+elif page_name == "Model evaluation":
+    render_model_evaluation(provider_config)
 elif page_name == "Prompt studio":
     render_prompt_studio(provider_config)
 else:
